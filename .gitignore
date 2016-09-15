@@ -1,1 +1,9 @@
 target/
+.lein-*
+.nrepl-port
+.idea
+lib/
+profiles.clj
+src/user.clj
+*.jar
+*.class
