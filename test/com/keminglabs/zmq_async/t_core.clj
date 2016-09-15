@@ -22,7 +22,8 @@
 
 (fact "ZMQ looper"
   (with-state-changes [(around :facts
-                               (let [{:keys [zmq-thread addr sock-server sock-client async-control-chan queue]
+                               (let [{:keys [zmq-thread addr sock-server
+                                             sock-client async-control-chan queue]
                                       :as context} (create-context)
                                       _      (do
                                                (.bind sock-server addr)
@@ -41,8 +42,9 @@
                                      (doseq [s (.getSockets (context :zcontext))]
                                        (.close s))))))]
 
-    ;;TODO: rearchitect so that one concern can be tested at a time?
-    ;;Then the zmq looper would need to use accessible mutable state instead of loop/recur...
+    ;; TODO: rearchitect so that one concern can be tested at a time?
+    ;; Then the zmq looper would need to use accessible mutable
+    ;; state instead of loop/recur...
     (fact "Opens sockets, conveys messages between sockets and async control channel"
       (let [test-addr "inproc://open-test"
             test-id "open-test"
@@ -83,7 +85,9 @@
 (fact "core.async looper"
   (with-state-changes [(around :facts
                                (let [context (create-context)
-                                     {:keys [zmq-thread addr sock-server sock-client async-control-chan async-thread queue]} context
+                                     {:keys [zmq-thread addr sock-server sock-client
+                                             async-control-chan async-thread queue]}
+                                     context
                                      acontrol async-control-chan
                                      zcontrol (doto sock-server
                                                 (.bind addr))]
@@ -101,7 +105,8 @@
                                      (doseq [s (.getSockets (context :zcontext))]
                                        (.close s))))))]
 
-    (fact "Tells ZMQ looper to shutdown when the async thread's control channel is closed"
+    (fact (str "Tells ZMQ looper to shutdown when the async thread's "
+               "control channel is closed")
       (close! acontrol)
       (Thread/sleep 50)
       (.recvStr zcontrol ZMQ/NOBLOCK) => "shutdown")
@@ -110,7 +115,8 @@
 
       ;;register test socket
       (register-socket! {:context context :out (chan) :in (chan)
-                         :socket-type :req :configurator #(.connect % "ipc://test-addr")})
+                         :socket-type :req
+                         :configurator #(.connect % "ipc://test-addr")})
 
       (Thread/sleep 50)
       (.recvStr zcontrol ZMQ/NOBLOCK) => "sentinel"
@@ -127,12 +133,14 @@
         (.take queue) => [:close sock-id]
         (.recvStr zcontrol ZMQ/NOBLOCK) => "shutdown"))
 
-    (fact "Forwards messages recieved from ZeroMQ thread to appropriate core.async channel."
+    (fact (str "Forwards messages recieved from ZeroMQ thread "
+               "to appropriate core.async channel.")
       (let [out (chan) in (chan)]
 
         ;;register test socket
         (register-socket! {:context context :out out :in in
-                           :socket-type :req :configurator #(.bind % "ipc://test-addr")})
+                           :socket-type :req
+                           :configurator #(.bind % "ipc://test-addr")})
 
         (Thread/sleep 50)
         (.recvStr zcontrol ZMQ/NOBLOCK) => "sentinel"
@@ -151,7 +159,8 @@
 
         ;;register test socket
         (register-socket! {:context context :out out :in in
-                           :socket-type :req :configurator #(.bind % "ipc://test-addr")})
+                           :socket-type :req
+                           :configurator #(.bind % "ipc://test-addr")})
 
         (Thread/sleep 50)
         (.recvStr zcontrol ZMQ/NOBLOCK) => "sentinel"
@@ -313,6 +322,8 @@
 (fact "register-socket! throws errors when given invalid optmaps"
   (register-socket! {}) => (throws IllegalArgumentException)
   (register-socket! {:out (chan) :in (chan)}) => (throws IllegalArgumentException)
-  (register-socket! {:socket-type :req :configurator identity}) => (throws IllegalArgumentException)
+  (register-socket!
+   {:socket-type :req :configurator identity}) => (throws IllegalArgumentException)
   (register-socket! {:socket "grr" :out (chan) :in (chan)
-                     :socket-type :req :configurator identity}) => (throws IllegalArgumentException))
+                     :socket-type :req
+                     :configurator identity}) => (throws IllegalArgumentException))
