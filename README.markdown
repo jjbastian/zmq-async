@@ -90,6 +90,7 @@ Each context has an associated shutdown function, which will close all ZeroMQ so
 + The `out` ports provided to the library should never block writes, otherwise the async message pump thread will block and no messages will be able to go through that context in either direction.
   This may be enforced in the future with an exception (once core.async provides a mechanism for checking if a port blocks writes).
 + The ZeroMQ thread will drop messages on the floor rather than blocking trying to hand it off to a socket.
++ Deadlocking is possible in some (rather theoretical) situations as pointed out by Ziyang Hu (@zh217). He has suggested some fixes to this in (https://github.com/lynaghk/zmq-async/issues/3) and eventually started his own fork. The situation seems quite theoretical and fix is rather convoluted so decided not to include it yet. Will investigate this issue further.
 
 
 ## Architecture
@@ -147,3 +148,4 @@ See the [project.clj](project.clj) for the SHA of the jzmq commit compiled into 
 + Handle ByteBuffers in addition to just strings and byte arrays.
 + Enforce that provided ports never block and/or are read/write only as appropriate. (AKA: switch to using `offer!` as [described by Rich](https://www.youtube.com/watch?v=4KqUvG8HPYo#t=3224) when they're released.)
 + Add [shutdown hooks](http://docs.oracle.com/javase/7/docs/api/java/lang/Runtime.html#addShutdownHook(java.lang.Thread)) to context objects?
++ Add support for more control messages to control sockopts on already running sockets. This probably implicates that if such a functionality is required, input/output control channels must be provided when registering a new socket.
