@@ -5,7 +5,7 @@
 
   :min-lein-version "2.0.0"
 
-  :dependencies [[org.clojure/clojure "1.5.1"]
+  :dependencies [[org.clojure/clojure "1.8.0"]
                  [com.keminglabs/jzmq "a6c1706"]
                  [com.keminglabs/jzmq-osx64 "a6c1706"]
                  [com.keminglabs/jzmq-linux64 "a6c1706"]
@@ -14,4 +14,4 @@
                  [org.clojure/core.async "0.1.242.0-44b1e3-alpha"]]
 
   :profiles {:dev {:source-paths ["dev"]
-                   :dependencies [[midje "1.5.1"]]}})
+                   :dependencies [[midje "1.8.3"]]}})
