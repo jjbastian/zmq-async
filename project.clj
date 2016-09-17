@@ -11,7 +11,7 @@
                  [com.keminglabs/jzmq-linux64 "a6c1706"]
 
                  [org.clojure/core.match "0.2.0"]
-                 [org.clojure/core.async "0.1.242.0-44b1e3-alpha"]]
+                 [org.clojure/core.async "0.2.391"]]
 
   :profiles {:dev {:source-paths ["dev"]
                    :dependencies [[midje "1.8.3"]]}})

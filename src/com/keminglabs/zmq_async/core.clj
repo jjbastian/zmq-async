@@ -1,6 +1,7 @@
 (ns com.keminglabs.zmq-async.core
   (:refer-clojure :exclude [read-string])
-  (:require [clojure.core.async :refer [chan close! go <! >! <!! >!! alts!!]]
+  (:require [clojure.core.async :refer
+             [chan close! go <! >! <!! >!! alts!! timeout offer!]]
             [clojure.core.match :refer [match]]
             [clojure.set :refer [subset?]]
             [clojure.edn :refer [read-string]]
@@ -19,6 +20,11 @@
 ;;
 ;; All in/out labels are written relative to this namespace.
 
+(def ^:dynamic *print-stderr* true)
+
+(defn error [fmt & args]
+  (binding [*out* *err*] (print (apply format (str fmt "\n") args))))
+
 (defn send!
   [^ZMQ$Socket sock msg]
   (let [msg (if (coll? msg) msg [msg])]
@@ -28,7 +34,7 @@
                                    (bit-or ZMQ/NOBLOCK ZMQ/SNDMORE)
                                    ZMQ/NOBLOCK))]
         (cond
-          (= false res) (println "WARNING: Message not sent on" sock)
+          (= false res) (error "*ERROR* message not sent on %s" sock)
           tail (recur tail))))))
 
 (defn receive-all
@@ -75,10 +81,9 @@
     (loop [socks {:control zmq-control-sock}]
       (let [[val sock] (poll (vals socks))
             id (get (map-invert socks) sock)
-            ;; Hack coercion  so we can have a pattern match against message
+            ;; Hack coercion so we can have a pattern match against message
             ;; from control socket
             val (if (= :control id) (keyword (String. val)) val)]
-
         (assert (not (nil? id)))
 
         (match [id val]
@@ -97,10 +102,25 @@
                 (.close (socks sock-id))
                 (recur (dissoc socks sock-id)))
 
-              ;;Send a message out
+              [[:command sock-id cmd]]
+              (do
+                (try
+                  ;; Execute cmd with socket corresponding to sock-id and
+                  ;; when return value is non-nil return it to async-control-chan
+                  ;; for further processing.
+                  (when-let [res (cmd (socks sock-id))]
+                    (>!! async-control-chan [:command sock-id res]))
+                  (catch Exception e
+                    (error "*ERROR* when executing a command: %s" e)))
+                (recur socks))
+
+              ;; Send a message out.
               [[sock-id outgoing-message]]
               (do
-                (send! (socks sock-id) outgoing-message)
+                (try
+                  (send! (socks sock-id) outgoing-message)
+                  (catch Exception e
+                    (error "*ERROR* when sending a message: %s" e)))
                 (recur socks))))
 
           [:control :shutdown]
@@ -108,7 +128,7 @@
             (.close sock))
 
           [:control msg]
-          (throw (Exception. (str "bad ZMQ control message: " msg)))
+          (throw (RuntimeException. (str "bad ZMQ control message: " msg)))
 
           ;; It's an incoming message, send it to the async thread to convey
           ;; to the application
@@ -117,12 +137,9 @@
             (>!! async-control-chan [incoming-sock-id msg])
             (recur socks)))))))
 
-
 (defn sock-id-for-chan
   [c pairings]
-  (first (for [[id {in :in out :out}] pairings
-               :when (#{in out} c)]
-             id)))
+  (first (for [[id chans] pairings :when ((set (vals chans)) c)] id)))
 
 (defn command-zmq-thread!
   "Helper used by the core.async thread to relay a command to the ZeroMQ thread.
@@ -151,10 +168,12 @@
     ;; map, where existence of :out and :in depend on the type
     ;; of ZeroMQ socket.
     (loop [pairings {:control {:in async-control-chan}}]
-      (let [in-chans (remove nil? (map :in (vals pairings)))
-            [val c] (alts!! in-chans)
-            id (sock-id-for-chan c pairings)]
-
+      (let [in-chans (->> (vals pairings)
+                          (map #(vals (select-keys % #{:in :ctl-in})))
+                          flatten
+                          (remove nil?))
+            [val c]  (alts!! in-chans)
+            id       (sock-id-for-chan c pairings)]
         (match [id val]
           ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
           ;; Control messages
@@ -165,14 +184,23 @@
             (command-zmq-thread! zmq-control-sock queue [:register sock-id sock])
             (recur (assoc pairings sock-id chanmap)))
 
+          ;; Command socket
+          [:control [:command sock-id result]]
+          (do
+            (when-let [ctl-out (get-in pairings [sock-id :ctl-out])]
+              (when-not (offer! ctl-out result)
+                (error "*WARNING* message dropped when passing to :ctl-out chan of %s"
+                       sock-id))
+              )
+            (recur pairings))
+
           ;; Relay a message from ZeroMQ socket to core.async channel.
           [:control [sock-id msg]]
           (let [out (get-in pairings [sock-id :out])]
             (assert out)
-            ;; We have a contract with library consumers that they cannot
-            ;; give us channels that can block, so this >!! won't tie up
-            ;; the async looper.
-            (>!! out msg)
+            (when-not (offer! out msg)
+              (error "*WARNING* message dropped when passing to :out chan of %s"
+                     sock-id))
             (recur pairings))
 
           ;; The control channel has been closed, close all ZMQ
@@ -187,8 +215,8 @@
             ;;Don't recur...
             nil)
 
-          [:control msg] (throw (Exception. (str "bad async control message: " msg)))
-
+          [:control msg] (throw (RuntimeException.
+                                 (str "bad async control message: " msg)))
 
           ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
           ;; Non-control messages
@@ -199,10 +227,22 @@
             (shutdown-pairing! [id (pairings id)] zmq-control-sock queue)
             (recur (dissoc pairings id)))
 
-          ;; Just convey the message to the ZeroMQ socket.
+          ;; Convey the message to the ZeroMQ socket.
           [id msg]
           (do
-            (command-zmq-thread! zmq-control-sock queue [id msg])
+            (cond
+
+              ;; Normal message to deliver via socket.
+              (= c (get-in pairings [id :in]))
+              (command-zmq-thread! zmq-control-sock queue [id msg])
+
+              ;; Command message to socket.
+              (= c (get-in pairings [id :ctl-in]))
+              (command-zmq-thread! zmq-control-sock queue [:command id msg])
+
+              :else
+              (throw (RuntimeException. "This should never happen."))
+              )
             (recur pairings)))))))
 
 
@@ -225,7 +265,6 @@
   :async-control-chan - channel used to control async thread
   :zmq-thread
   :async-thread"
-
   ([] (create-context nil))
   ([name]
      (let [addr (str "inproc://" (gensym "zmq-async-"))
@@ -240,10 +279,11 @@
            async-control-chan (chan)
 
            zmq-thread (doto (Thread. (zmq-looper queue sock-server async-control-chan))
-                        (.setName (str "ZeroMQ looper " "[" (or name addr) "]"))
+                        (.setName (format "zmq-looper-[%s]" (or name addr)))
                         (.setDaemon true))
-           async-thread (doto (Thread. (async-looper queue async-control-chan sock-client))
-                          (.setName (str "core.async looper" "[" (or name addr) "]"))
+           async-thread (doto (Thread. (async-looper queue async-control-chan
+                                                     sock-client))
+                          (.setName (format "core.async-looper-[%s]" (or name addr)))
                           (.setDaemon true))]
 
        {:zcontext zcontext
@@ -274,7 +314,7 @@
 (def ^:private automagic-context
   "Default context used by any calls to `register-socket!`
   that don't specify an explicit context."
-  (create-context "zmq-async default context"))
+  (create-context "zmq-async-default-context"))
 
 (defn register-socket!
   "Associate ZeroMQ `socket` with provided write-only `out`
@@ -300,7 +340,7 @@
                   at least one address within this function;
                   see http://zeromq.github.io/jzmq/javadocs/
                   for the ZeroMQ socket configuration options"
-  [{:keys [context in out socket socket-type configurator]}]
+  [{:keys [context in out ctl-in ctl-out socket socket-type configurator]}]
 
   (when (and (nil? socket)
              (or (nil? socket-type) (nil? configurator)))
@@ -312,11 +352,9 @@
     (throw (IllegalArgumentException.
             (str "You can provide a ZeroMQ socket OR a socket-type "
                  "and configurator, not both."))))
-
   (when (and (nil? out) (nil? in))
     (throw (IllegalArgumentException.
             "You must provide at least one of :out and :in channels.")))
-
   (let [context            (or context (doto automagic-context
                                          (initialize!)))
         ^ZMQ$Socket socket (or socket (doto (.createSocket (context :zcontext)
@@ -335,6 +373,10 @@
                                                              :pull   ZMQ/PULL
                                                              :push   ZMQ/PUSH))
                                         configurator))]
-    
     (>!! (:async-control-chan context)
-         [:register socket {:in in :out out}])))
+         [:register socket {:in in :out out :ctl-in ctl-in :ctl-out ctl-out}])))
+
+(comment
+  (initialize! automagic-context)
+
+  )

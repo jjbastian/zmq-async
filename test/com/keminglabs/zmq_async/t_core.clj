@@ -1,6 +1,7 @@
 (ns com.keminglabs.zmq-async.t-core
   (:require [com.keminglabs.zmq-async.core :refer :all]
-            [clojure.core.async :refer [go close! >!! <!! chan timeout alts!!]]
+            [clojure.core.async :refer
+             [go close! >!! >! <!! <! chan timeout alts!!]]
             [midje.sweet :refer :all])
   (:import org.zeromq.ZMQ))
 
@@ -135,7 +136,7 @@
 
     (fact (str "Forwards messages recieved from ZeroMQ thread "
                "to appropriate core.async channel.")
-      (let [out (chan) in (chan)]
+      (let [out (chan 1) in (chan)]
 
         ;;register test socket
         (register-socket! {:context context :out out :in in
@@ -197,7 +198,7 @@
 
     (fact "raw->wrapped"
       (let [addr "ipc://test-addr" test-msg "hihi"
-            out (chan) in (chan)]
+            out (chan 1) in (chan)]
 
         (register-socket! {:context context :out out :in in
                            :socket-type :pair :configurator #(.bind % addr)})
@@ -209,7 +210,7 @@
 
     (fact "raw->wrapped, no explicit context"
       (let [addr "ipc://test-addr" test-msg "hihi"
-            out (chan) in (chan)]
+            out (chan 1) in (chan)]
 
         (register-socket! {:out out :in in
                            :socket-type :pair :configurator #(.bind % addr)})
@@ -236,7 +237,7 @@
 
     (fact "wrapped pair -> wrapped pair"
       (let [addr "inproc://test-addr" test-msg "hihi"
-            [s-out s-in c-out c-in] (repeatedly 4 chan)]
+            [s-out s-in c-out c-in] (repeatedly 4 #(chan 1))]
 
         (register-socket! {:context context :out s-out :in s-in
                            :socket-type :pair :configurator #(.bind % addr)})
@@ -248,7 +249,7 @@
 
     (fact "wrapped pair -> wrapped pair w/ multipart message"
       (let [addr "inproc://test-addr" test-msg ["hihi" "what's" "up?"]
-            [s-out s-in c-out c-in] (repeatedly 4 chan)]
+            [s-out s-in c-out c-in] (repeatedly 4 #(chan 1))]
 
         (register-socket! {:context context :out s-out :in s-in
                            :socket-type :pair :configurator #(.bind % addr)})
@@ -261,7 +262,7 @@
 
     (fact "wrapped req <-> wrapped rep, go/future"
       (let [addr "inproc://test-addr"
-            [s-out s-in c-out c-in] (repeatedly 4 chan)
+            [s-out s-in c-out c-in] (repeatedly 4 #(chan 1))
             n 5
             server (go
                      (dotimes [_ n]
@@ -290,7 +291,7 @@
 
     (fact "wrapped req <-> wrapped rep, go/go"
       (let [addr "inproc://test-addr"
-            [s-out s-in c-out c-in] (repeatedly 4 chan)
+            [s-out s-in c-out c-in] (repeatedly 4 #(chan 1))
             n 5
             server (go
                      (dotimes [_ n]
@@ -317,7 +318,18 @@
           (close! c-out)
           (close! s-out)
           (close! server)
-          (<!! server) => :success))))
+          (<!! server) => :success))
+
+    (fact
+     ":ctl-in / :ctl-out"
+     (let [sock {:in (chan) :out (chan 1) :ctl-in (chan) :ctl-out (chan 1)}
+           opt-map (merge sock {:context context :socket-type :dealer
+                                :configurator #(comment %)})
+           id (.getBytes "test-id")]
+       (register-socket! opt-map)
+       (>!! (sock :ctl-in) #(.setIdentity % id))
+       (>!! (sock :ctl-in) #(.getIdentity %))
+       (vec (<!! (sock :ctl-out))) => (vec id)))))
 
 (fact "register-socket! throws errors when given invalid optmaps"
   (register-socket! {}) => (throws IllegalArgumentException)
